@@ -1,0 +1,126 @@
+import torch
+import torch.nn.functional as F
+from megatron.core.transformer import MLATransformerConfig, TransformerConfig
+from transformers import PretrainedConfig
+
+def _get_base_transformer_config(hf_config: PretrainedConfig, dtype: torch.dtype, **kwargs) -> TransformerConfig:
+    pass
+    from megatron.core import parallel_state as mpu
+
+    overlap_p2p_comm = mpu.get_virtual_pipeline_model_parallel_world_size() is not None and mpu.get_virtual_pipeline_model_parallel_world_size() > 1
+    batch_p2p_comm = False
+
+    base_config = {
+        
+        "num_layers": hf_config.num_hidden_layers,
+        "hidden_size": hf_config.hidden_size,
+        "num_attention_heads": hf_config.num_attention_heads,
+        "num_query_groups": hf_config.num_key_value_heads,
+        "ffn_hidden_size": hf_config.intermediate_size,
+        "attention_dropout": hf_config.attention_dropout,
+        "hidden_dropout": getattr(hf_config, "hidden_dropout", 0.0),
+        
+        "activation_func": F.silu,
+        "normalization": "RMSNorm",
+        "gated_linear_unit": True,
+        
+        "pipeline_dtype": dtype,
+        "params_dtype": dtype,
+        "bf16": dtype is torch.bfloat16,
+        
+        "tensor_model_parallel_size": mpu.get_tensor_model_parallel_world_size(),
+        "pipeline_model_parallel_size": mpu.get_pipeline_model_parallel_world_size(),
+        "virtual_pipeline_model_parallel_size": mpu.get_virtual_pipeline_model_parallel_world_size(),
+        "context_parallel_size": mpu.get_context_parallel_world_size(),
+        "overlap_p2p_comm": overlap_p2p_comm,
+        "batch_p2p_comm": batch_p2p_comm,
+        "sequence_parallel": mpu.get_tensor_model_parallel_world_size() > 1,
+        
+        "variable_seq_lengths": True,
+        "masked_softmax_fusion": True,
+        "moe_token_dispatcher_type": "alltoall",
+    }
+
+    base_config.update(kwargs)
+    print(f"Overridden TF init config: {base_config}")
+
+    return TransformerConfig(**base_config)
+
+def hf_to_mcore_config_dense(hf_config: PretrainedConfig, dtype: torch.dtype) -> TransformerConfig:
+    
+    qkv_bias = True if "Qwen2ForCausalLM" in hf_config.architectures else getattr(hf_config, "attention_bias", False)
+
+    return _get_base_transformer_config(
+        hf_config=hf_config,
+        dtype=dtype,
+        use_cpu_initialization=False,
+        add_bias_linear=False,
+        add_qkv_bias=qkv_bias,
+    )
+
+def hf_to_mcore_config_qwen2moe(hf_config: PretrainedConfig, dtype: torch.dtype) -> TransformerConfig:
+    return _get_base_transformer_config(
+        hf_config=hf_config,
+        dtype=dtype,
+        use_cpu_initialization=False,
+        add_bias_linear=False,
+        layernorm_epsilon=hf_config.rms_norm_eps,
+        
+        moe_ffn_hidden_size=hf_config.moe_intermediate_size,
+        moe_router_bias_update_rate=0.001,
+        moe_router_topk=hf_config.num_experts_per_tok,
+        num_moe_experts=hf_config.num_experts,
+        moe_shared_expert_intermediate_size=hf_config.shared_expert_intermediate_size,
+        moe_aux_loss_coeff=hf_config.router_aux_loss_coef,
+        
+        moe_router_load_balancing_type="aux_loss",
+        moe_shared_expert_overlap=True,
+        moe_grouped_gemm=True,
+        moe_router_score_function="softmax",
+        
+        persist_layer_norm=True,
+        bias_activation_fusion=True,
+        bias_dropout_fusion=True,
+        
+        moe_router_pre_softmax=True,
+        add_qkv_bias=True,
+    )
+
+def hf_to_mcore_config_mixtral(hf_config: PretrainedConfig, dtype: torch.dtype) -> TransformerConfig:
+    return _get_base_transformer_config(
+        hf_config=hf_config,
+        dtype=dtype,
+        use_cpu_initialization=False,
+        add_bias_linear=False,
+        layernorm_epsilon=hf_config.rms_norm_eps,
+        
+        num_moe_experts=hf_config.num_local_experts,
+        moe_aux_loss_coeff=hf_config.router_aux_loss_coef,
+        moe_router_topk=hf_config.num_experts_per_tok,
+        moe_router_pre_softmax=True,
+        moe_router_load_balancing_type="aux_loss",
+        moe_router_score_function="softmax",
+        moe_shared_expert_intermediate_size=None,  
+        moe_shared_expert_overlap=False,  
+        moe_ffn_hidden_size=hf_config.intermediate_size,
+        moe_router_bias_update_rate=0.001,
+        
+        moe_grouped_gemm=True,
+        
+        persist_layer_norm=True,
+        apply_rope_fusion=True,
+        bias_activation_fusion=True,
+        bias_dropout_fusion=True,
+    )
+
+def hf_to_mcore_config_dpskv3(hf_config: PretrainedConfig, dtype: torch.dtype) -> MLATransformerConfig:
+    
+    raise NotImplementedError("DeepseekV3ForCausalLM is not supported yet")
+
+def hf_to_mcore_config_qwen2_5_vl(hf_config: PretrainedConfig, dtype: torch.dtype) -> TransformerConfig:
+    
+    raise NotImplementedError("Qwen2_5_VLForConditionalGeneration is not supported yet")
+
+def hf_to_mcore_config_llama4(hf_config: PretrainedConfig, dtype: torch.dtype) -> TransformerConfig:
+    
+    raise NotImplementedError("Llama4ForConditionalGeneration is not supported yet")
